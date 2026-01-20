@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neural Network Builder</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar with layer blocks -->
+        <aside class="sidebar">
+            <h2>Layers</h2>
+            
+            <!-- Input/Output Section -->
+            <div class="palette-section">
+                <h3 class="section-title">Input / Output</h3>
+                <div class="layer-palette">
+                    <div class="palette-item" data-type="input" draggable="true">
+                        <div class="palette-icon">📥</div>
+                        <span>Input</span>
+                    </div>
+                    <div class="palette-item" data-type="output" draggable="true">
+                        <div class="palette-icon">📤</div>
+                        <span>Output</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Core Layers Section -->
+            <div class="palette-section">
+                <h3 class="section-title">Core Layers</h3>
+                <div class="layer-palette">
+                    <div class="palette-item" data-type="dense" draggable="true">
+                        <div class="palette-icon">⬛</div>
+                        <span>Dense</span>
+                    </div>
+                    <div class="palette-item" data-type="conv2d" draggable="true">
+                        <div class="palette-icon">🔲</div>
+                        <span>Conv2D</span>
+                    </div>
+                    <div class="palette-item" data-type="pooling" draggable="true">
+                        <div class="palette-icon">📊</div>
+                        <span>Pooling</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Utility Layers Section -->
+            <div class="palette-section">
+                <h3 class="section-title">Utility</h3>
+                <div class="layer-palette">
+                    <div class="palette-item" data-type="flatten" draggable="true">
+                        <div class="palette-icon">📏</div>
+                        <span>Flatten</span>
+                    </div>
+                    <div class="palette-item" data-type="reshape" draggable="true">
+                        <div class="palette-icon">🔄</div>
+                        <span>Reshape</span>
+                    </div>
+                    <div class="palette-item" data-type="concatenate" draggable="true">
+                        <div class="palette-icon">🔗</div>
+                        <span>Concatenate</span>
+                    </div>
+                    <div class="palette-item" data-type="activation" draggable="true">
+                        <div class="palette-icon">⚡</div>
+                        <span>Activation</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Regularization Section -->
+            <div class="palette-section">
+                <h3 class="section-title">Regularization</h3>
+                <div class="layer-palette">
+                    <div class="palette-item" data-type="dropout" draggable="true">
+                        <div class="palette-icon">💧</div>
+                        <span>Dropout</span>
+                    </div>
+                    <div class="palette-item" data-type="batchnorm" draggable="true">
+                        <div class="palette-icon">📐</div>
+                        <span>BatchNorm</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="sidebar-section">
+                <h3>Actions</h3>
+                <button id="validate-btn" class="action-btn">
+                    ✓ Validate Network
+                </button>
+                <button id="export-btn" class="action-btn primary">
+                    📄 Generate PyTorch Code
+                </button>
+                <button id="clear-btn" class="action-btn danger">
+                    🗑 Clear All
+                </button>
+            </div>
+            
+            <div class="sidebar-section">
+                <h3>Validation Status</h3>
+                <div id="validation-status" class="validation-status">
+                    <span class="status-pending">Not validated</span>
+                </div>
+                <div id="validation-errors" class="validation-errors"></div>
+            </div>
+        </aside>
+        
+        <!-- Main workspace -->
+        <main class="workspace-container">
+            <div class="workspace-header">
+                <h1>Neural Network Builder</h1>
+                <span class="instructions">Drag layers • Connect ports • Ctrl+D duplicate • Delete key to remove • Tabs: Ctrl+T/W</span>
+            </div>
+            
+            <!-- Tab bar -->
+            <div class="tab-bar">
+                <div id="tabs-container" class="tabs-container">
+                    <!-- Tabs will be inserted here -->
+                </div>
+                <button id="new-tab-btn" class="new-tab-btn" title="New Model">+</button>
+            </div>
+            
+            <div id="workspace" class="workspace">
+                <svg id="connections-svg" class="connections-layer"></svg>
+                <div id="layers-container" class="layers-container"></div>
+            </div>
+        </main>
+        
+        <!-- Configuration panel -->
+        <aside id="config-panel" class="config-panel hidden">
+            <div class="config-header">
+                <h2 id="config-title">Layer Configuration</h2>
+                <button id="close-config" class="close-btn">×</button>
+            </div>
+            <div id="config-content" class="config-content">
+                <!-- Dynamic content based on layer type -->
+            </div>
+            <div class="config-footer">
+                <button id="delete-layer-btn" class="action-btn danger">Delete Layer</button>
+            </div>
+        </aside>
+    </div>
+    
+    <!-- Layer templates -->
+    <template id="input-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Input Layer">
+        </div>
+        <div class="config-group">
+            <label for="shape-preset">Common Shapes</label>
+            <select id="shape-preset" class="config-input">
+                <option value="">-- Select Preset --</option>
+                <optgroup label="1D (Flat)">
+                    <option value="784">MNIST Flat (784)</option>
+                    <option value="3072">CIFAR Flat (3072)</option>
+                    <option value="512">Vector 512</option>
+                    <option value="256">Vector 256</option>
+                    <option value="128">Vector 128</option>
+                </optgroup>
+                <optgroup label="2D Images (H,W,C)">
+                    <option value="28,28,1">MNIST (28×28×1)</option>
+                    <option value="32,32,3">CIFAR-10 (32×32×3)</option>
+                    <option value="64,64,3">64×64 RGB</option>
+                    <option value="128,128,3">128×128 RGB</option>
+                    <option value="224,224,3">ImageNet (224×224×3)</option>
+                    <option value="256,256,3">256×256 RGB</option>
+                </optgroup>
+                <optgroup label="Grayscale Images">
+                    <option value="32,32,1">32×32 Grayscale</option>
+                    <option value="64,64,1">64×64 Grayscale</option>
+                    <option value="128,128,1">128×128 Grayscale</option>
+                </optgroup>
+            </select>
+        </div>
+        <div class="config-group">
+            <label for="input-shape">Custom Shape (comma-separated)</label>
+            <input type="text" id="input-shape" class="config-input" placeholder="784 or 28,28,1">
+            <small>For 1D: single number (e.g., 784). For 2D+: H,W,C (e.g., 28,28,1)</small>
+        </div>
+    </template>
+    
+    <template id="output-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Output Layer">
+        </div>
+        <div class="config-group">
+            <label for="neurons">Number of Output Units</label>
+            <input type="number" id="neurons" class="config-input" min="1" value="10">
+        </div>
+        <div class="config-group">
+            <label for="activation">Output Activation</label>
+            <select id="activation" class="config-input">
+                <option value="softmax">Softmax (Classification)</option>
+                <option value="sigmoid">Sigmoid (Binary/Multi-label)</option>
+                <option value="none">None (Regression)</option>
+                <option value="tanh">Tanh</option>
+            </select>
+        </div>
+    </template>
+    
+    <template id="reshape-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Reshape Layer">
+        </div>
+        <div class="config-group">
+            <label for="target-shape">Target Shape (comma-separated)</label>
+            <input type="text" id="target-shape" class="config-input" placeholder="28,28,1">
+            <small>Use -1 for automatic dimension (e.g., -1,28,28)</small>
+        </div>
+        <div class="config-group info-box">
+            <strong>Note:</strong> Total elements must match. For example, 784 can reshape to 28,28,1 (28×28×1=784)
+        </div>
+    </template>
+    
+    <template id="dense-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Dense Layer">
+        </div>
+        <div class="config-group">
+            <label for="neurons">Number of Neurons</label>
+            <input type="number" id="neurons" class="config-input" min="1" value="128">
+        </div>
+        <div class="config-group">
+            <label for="activation">Activation Function</label>
+            <select id="activation" class="config-input">
+                <option value="relu">ReLU</option>
+                <option value="sigmoid">Sigmoid</option>
+                <option value="tanh">Tanh</option>
+                <option value="softmax">Softmax</option>
+                <option value="leaky_relu">Leaky ReLU</option>
+                <option value="none">None</option>
+            </select>
+        </div>
+        <div class="config-group">
+            <label>
+                <input type="checkbox" id="use-bias" checked>
+                Use Bias
+            </label>
+        </div>
+    </template>
+    
+    <template id="conv2d-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Conv2D Layer">
+        </div>
+        <div class="config-group">
+            <label for="filters">Number of Filters</label>
+            <input type="number" id="filters" class="config-input" min="1" value="32">
+        </div>
+        <div class="config-group">
+            <label for="kernel-size">Kernel Size</label>
+            <input type="number" id="kernel-size" class="config-input" min="1" value="3">
+        </div>
+        <div class="config-group">
+            <label for="stride">Stride</label>
+            <input type="number" id="stride" class="config-input" min="1" value="1">
+        </div>
+        <div class="config-group">
+            <label for="padding">Padding</label>
+            <select id="padding" class="config-input">
+                <option value="valid">Valid (No Padding)</option>
+                <option value="same">Same (Preserve Size)</option>
+            </select>
+        </div>
+        <div class="config-group">
+            <label for="activation">Activation Function</label>
+            <select id="activation" class="config-input">
+                <option value="relu">ReLU</option>
+                <option value="sigmoid">Sigmoid</option>
+                <option value="tanh">Tanh</option>
+                <option value="leaky_relu">Leaky ReLU</option>
+                <option value="none">None</option>
+            </select>
+        </div>
+    </template>
+    
+    <template id="pooling-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Pooling Layer">
+        </div>
+        <div class="config-group">
+            <label for="pool-type">Pooling Type</label>
+            <select id="pool-type" class="config-input">
+                <option value="max">Max Pooling</option>
+                <option value="avg">Average Pooling</option>
+            </select>
+        </div>
+        <div class="config-group">
+            <label for="pool-size">Pool Size</label>
+            <input type="number" id="pool-size" class="config-input" min="1" value="2">
+        </div>
+        <div class="config-group">
+            <label for="stride">Stride</label>
+            <input type="number" id="stride" class="config-input" min="1" value="2">
+        </div>
+    </template>
+    
+    <template id="flatten-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Flatten Layer">
+        </div>
+        <p class="config-info">Flattens the input into a 1D tensor. No additional configuration needed.</p>
+    </template>
+    
+    <template id="concatenate-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Concatenate Layer">
+        </div>
+        <div class="config-group">
+            <label for="concat-axis">Concatenation Axis</label>
+            <select id="concat-axis" class="config-input">
+                <option value="-1">Last Axis (default)</option>
+                <option value="0">Axis 0</option>
+                <option value="1">Axis 1</option>
+                <option value="2">Axis 2</option>
+            </select>
+            <small>Axis along which to concatenate the inputs</small>
+        </div>
+        <div class="config-group info-box">
+            <strong>Inputs:</strong> Connect two layers to the input ports (top and bottom on the left side). Both inputs must have compatible shapes.
+        </div>
+    </template>
+    
+    <template id="dropout-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Dropout Layer">
+        </div>
+        <div class="config-group">
+            <label for="dropout-rate">Dropout Rate</label>
+            <input type="number" id="dropout-rate" class="config-input" min="0" max="1" step="0.1" value="0.5">
+            <small>Probability of dropping a neuron (0-1)</small>
+        </div>
+    </template>
+    
+    <template id="batchnorm-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="BatchNorm Layer">
+        </div>
+        <div class="config-group">
+            <label for="momentum">Momentum</label>
+            <input type="number" id="momentum" class="config-input" min="0" max="1" step="0.01" value="0.1">
+        </div>
+        <div class="config-group">
+            <label for="epsilon">Epsilon</label>
+            <input type="number" id="epsilon" class="config-input" min="0" step="0.00001" value="0.00001">
+        </div>
+    </template>
+    
+    <template id="activation-config-template">
+        <div class="config-group">
+            <label for="layer-name">Layer Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Activation Layer">
+        </div>
+        <div class="config-group">
+            <label for="activation">Activation Function</label>
+            <select id="activation" class="config-input">
+                <option value="relu">ReLU</option>
+                <option value="sigmoid">Sigmoid</option>
+                <option value="tanh">Tanh</option>
+                <option value="softmax">Softmax</option>
+                <option value="leaky_relu">Leaky ReLU</option>
+            </select>
+        </div>
+    </template>
+    
+    <!-- Code Preview Modal -->
+    <div id="code-preview-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Generated PyTorch Code</h2>
+                <button class="modal-close-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <pre id="code-preview"><code></code></pre>
+            </div>
+            <div class="modal-footer">
+                <button id="copy-code-btn" class="action-btn">
+                    📋 Copy to Clipboard
+                </button>
+                <button id="download-code-btn" class="action-btn primary">
+                    ⬇ Download as .py File
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
