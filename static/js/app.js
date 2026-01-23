@@ -13,7 +13,7 @@ class NeuralNetworkBuilder {
         // Current model state (references active tab's data)
         this.layers = new Map();
         this.connections = [];
-        this.selectedLayerId = null;
+        this.selectedLayers = [];
         this.layerCounter = 0;
         this.layerShapes = {};
         
@@ -22,6 +22,12 @@ class NeuralNetworkBuilder {
         this.isConnecting = false;
         this.connectingFrom = null;
         this.tempLine = null;
+
+        // Selection state
+        this.isSelecting = false;
+        this.selectionStart = null;
+        this.selectionRect = null;
+        this.justSelected = false;
         
         this.init();
     }
@@ -63,18 +69,26 @@ class NeuralNetworkBuilder {
         
         // Workspace click to deselect
         this.workspace.addEventListener('click', (e) => {
+            if (this.justSelected) {
+                this.justSelected = false;
+                return;
+            }
             if (e.target === this.workspace || e.target === this.layersContainer) {
                 this.deselectAll();
             }
         });
+
+        // Selection box
+        this.workspace.addEventListener('mousedown', (e) => this.onWorkspaceMouseDown(e));
         
-        // Mouse move for connection drawing
-        this.workspace.addEventListener('mousemove', (e) => this.onMouseMove(e));
-        this.workspace.addEventListener('mouseup', (e) => this.onMouseUp(e));
+        // Mouse move and up for connection and selection
+        document.addEventListener('mousemove', (e) => this.onMouseMove(e));
+        document.addEventListener('mouseup', (e) => this.onMouseUp(e));
         
         // Action buttons
         document.getElementById('validate-btn').addEventListener('click', () => this.validateNetwork());
         document.getElementById('export-btn').addEventListener('click', () => this.exportPyTorch());
+        document.getElementById('create-custom-btn').addEventListener('click', () => this.createCustomBlock());
         document.getElementById('clear-btn').addEventListener('click', () => this.clearAll());
         
         // Config panel
@@ -114,20 +128,20 @@ class NeuralNetworkBuilder {
                 this.switchToNextTab(e.shiftKey ? -1 : 1);
             }
             
-            // Ctrl+D: Duplicate selected layer
+            // Ctrl+D: Duplicate selected layers
             if (e.ctrlKey && e.key === 'd') {
                 e.preventDefault();
-                if (this.selectedLayerId) {
-                    this.duplicateLayer(this.selectedLayerId);
+                if (this.selectedLayers.length > 0) {
+                    this.selectedLayers.forEach(id => this.duplicateLayer(id));
                 }
             }
             
-            // Delete/Backspace: Delete selected layer
-            if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedLayerId) {
+            // Delete/Backspace: Delete selected layers
+            if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedLayers.length > 0) {
                 // Only if not focused on an input
                 if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
                     e.preventDefault();
-                    this.deleteLayer(this.selectedLayerId);
+                    this.selectedLayers.forEach(id => this.deleteLayer(id));
                 }
             }
         });
@@ -158,7 +172,7 @@ class NeuralNetworkBuilder {
             connections: [],
             layerCounter: 0,
             layerShapes: {},
-            selectedLayerId: null
+            selectedLayers: []
         };
         
         this.tabs.set(tabId, tabData);
@@ -217,7 +231,7 @@ class NeuralNetworkBuilder {
         this.connections = tabData.connections;
         this.layerCounter = tabData.layerCounter;
         this.layerShapes = tabData.layerShapes;
-        this.selectedLayerId = tabData.selectedLayerId;
+        this.selectedLayers = [...tabData.selectedLayers];
         
         // Update UI
         this.updateTabUI();
@@ -236,7 +250,7 @@ class NeuralNetworkBuilder {
             tabData.connections = this.connections;
             tabData.layerCounter = this.layerCounter;
             tabData.layerShapes = this.layerShapes;
-            tabData.selectedLayerId = this.selectedLayerId;
+            tabData.selectedLayers = [...this.selectedLayers];
         }
     }
     
@@ -325,10 +339,7 @@ class NeuralNetworkBuilder {
         });
         
         // Restore selection
-        if (this.selectedLayerId) {
-            const el = document.getElementById(this.selectedLayerId);
-            el?.classList.add('selected');
-        }
+        this.updateSelectionUI();
     }
     
     // ========== Palette Drag and Drop ==========
@@ -430,7 +441,8 @@ class NeuralNetworkBuilder {
             concatenate: 'Concat',
             dropout: 'Dropout',
             batchnorm: 'BatchNorm',
-            activation: 'Activation'
+            activation: 'Activation',
+            custom: 'Custom Block'
         };
         return names[type] || 'Layer';
     }
@@ -464,7 +476,8 @@ class NeuralNetworkBuilder {
             concatenate: '🔗',
             dropout: '💧',
             batchnorm: '📐',
-            activation: '⚡'
+            activation: '⚡',
+            custom: '🧱'
         };
         return icons[type] || '📦';
     }
@@ -504,6 +517,8 @@ class NeuralNetworkBuilder {
                 return `Momentum: ${config.momentum}`;
             case 'activation':
                 return `Function: ${config.activation}`;
+            case 'custom':
+                return `Inputs: ${config.inputPorts}, Outputs: ${config.outputPorts}`;
             default:
                 return '';
         }
@@ -527,9 +542,18 @@ class NeuralNetworkBuilder {
             : '';
         
         // Determine which ports to show
-        const hasInputPort = layer.type !== 'input';
-        const hasOutputPort = layer.type !== 'output';
-        const inputPortCount = this.getInputPortCount(layer.type);
+        let hasInputPort, hasOutputPort, inputPortCount, outputPortCount;
+        if (layer.type === 'custom') {
+            hasInputPort = layer.config.inputPorts > 0;
+            hasOutputPort = layer.config.outputPorts > 0;
+            inputPortCount = layer.config.inputPorts;
+            outputPortCount = layer.config.outputPorts;
+        } else {
+            hasInputPort = layer.type !== 'input';
+            hasOutputPort = layer.type !== 'output';
+            inputPortCount = this.getInputPortCount(layer.type);
+            outputPortCount = 1; // Default single output
+        }
         
         // Generate input ports HTML
         let inputPortsHtml = '';
@@ -555,6 +579,7 @@ class NeuralNetworkBuilder {
                 inputPortsHtml = `
                     <div class="input-port-wrapper${hasIncomingConnection ? ' has-connection' : ''}">
                         <div class="port input-port" data-port="input"></div>
+                        <span class="input-port-label">In</span>
                         ${hasIncomingConnection ? '<span class="connection-delete-btn" title="Remove connection">×</span>' : ''}
                     </div>
                 `;
@@ -575,7 +600,21 @@ class NeuralNetworkBuilder {
                 ${shapeInfo}
             </div>
             ${inputPortsHtml}
-            ${hasOutputPort ? '<div class="port output-port" data-port="output"></div>' : ''}
+            ${hasOutputPort ? (outputPortCount > 1 ? `
+                <div class="multi-output-ports">
+                    ${Array.from({length: outputPortCount}, (_, i) => `
+                        <div class="output-port-wrapper">
+                            <div class="port output-port" data-port="output_${i}"></div>
+                            <span class="output-port-label">${String.fromCharCode(65 + i)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : `
+                <div class="output-port-wrapper">
+                    <div class="port output-port" data-port="output"></div>
+                    <span class="output-port-label">Out</span>
+                </div>
+            `) : ''}
         `;
         
         // Delete button
@@ -609,7 +648,7 @@ class NeuralNetworkBuilder {
         // Layer click to select
         el.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.selectLayer(layer.id);
+            this.selectLayer(layer.id, e);
         });
         
         // Port interactions
@@ -632,7 +671,7 @@ class NeuralNetworkBuilder {
             const layer = this.layers.get(layerId);
             if (layer) {
                 this.renderLayer(layer);
-                if (this.selectedLayerId === layerId) {
+                if (this.selectedLayers.includes(layerId)) {
                     document.getElementById(layerId)?.classList.add('selected');
                 }
             }
@@ -643,55 +682,381 @@ class NeuralNetworkBuilder {
         const layer = this.layers.get(layerId);
         if (layer) {
             this.renderLayer(layer);
-            if (this.selectedLayerId === layerId) {
+            if (this.selectedLayers.includes(layerId)) {
                 document.getElementById(layerId)?.classList.add('selected');
             }
         }
     }
     
-    selectLayer(id) {
-        this.deselectAll();
-        this.selectedLayerId = id;
-        
-        const el = document.getElementById(id);
-        if (el) {
-            el.classList.add('selected');
+    selectLayer(id, event = null) {
+        const isMultiSelect = event && event.shiftKey;
+        const isAlreadySelected = this.selectedLayers.includes(id);
+
+        if (!isMultiSelect) {
+            this.deselectAll();
+            this.selectedLayers = [id];
+        } else {
+            if (isAlreadySelected) {
+                this.selectedLayers = this.selectedLayers.filter(lid => lid !== id);
+            } else {
+                this.selectedLayers.push(id);
+            }
         }
-        
-        this.openConfigPanel(id);
+
+        // Update UI
+        this.updateSelectionUI();
+
+        // Open config panel only for single selection
+        if (this.selectedLayers.length === 1) {
+            this.openConfigPanel(id);
+        } else {
+            this.closeConfigPanel();
+        }
     }
     
-    deselectAll() {
+    updateSelectionUI() {
         document.querySelectorAll('.layer-block.selected').forEach(el => {
             el.classList.remove('selected');
         });
-        this.selectedLayerId = null;
+
+        this.selectedLayers.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.add('selected');
+            }
+        });
+
+        // Update create custom block button
+        const createBtn = document.getElementById('create-custom-btn');
+        createBtn.disabled = this.selectedLayers.length < 2;
+    }
+
+    deselectAll() {
+        this.selectedLayers = [];
+        this.updateSelectionUI();
         this.closeConfigPanel();
     }
-    
+
+    createCustomBlock() {
+        if (this.selectedLayers.length < 2) return;
+
+        const selectedLayerIds = new Set(this.selectedLayers);
+
+        // Get all connections between selected layers and to/from outside
+        const internalConnections = [];
+        const externalIncoming = [];
+        const externalOutgoing = [];
+
+        for (const conn of this.connections) {
+            const fromSelected = selectedLayerIds.has(conn.from);
+            const toSelected = selectedLayerIds.has(conn.to);
+
+            if (fromSelected && toSelected) {
+                internalConnections.push(conn);
+            } else if (!fromSelected && toSelected) {
+                externalIncoming.push(conn);
+            } else if (fromSelected && !toSelected) {
+                externalOutgoing.push(conn);
+            }
+        }
+
+        // Determine input/output ports
+        const hasInputLayer = Array.from(selectedLayerIds).some(id => this.layers.get(id).type === 'input');
+        const hasOutputLayer = Array.from(selectedLayerIds).some(id => this.layers.get(id).type === 'output');
+
+        // Check if all selected layers are connected (using undirected graph)
+        const selectedLayers = Array.from(selectedLayerIds);
+        const graph = {};
+        selectedLayers.forEach(id => graph[id] = []);
+        internalConnections.forEach(conn => {
+            if (graph[conn.from]) graph[conn.from].push(conn.to);
+            if (graph[conn.to]) graph[conn.to].push(conn.from);  // undirected
+        });
+        const visited = new Set();
+        function dfs(node) {
+            visited.add(node);
+            graph[node].forEach(neigh => {
+                if (!visited.has(neigh)) dfs(neigh);
+            });
+        }
+        if (selectedLayers.length > 0) {
+            dfs(selectedLayers[0]);
+            if (visited.size !== selectedLayers.length) {
+                alert("Selected layers are not all connected. Please select a connected group of layers.");
+                return;
+            }
+        }
+
+        // Find root layers (no incoming internal connections)
+        const rootLayers = selectedLayers.filter(id => !internalConnections.some(c => c.to === id));
+
+        // Find leaf layers (no outgoing internal connections)
+        const leafLayers = selectedLayers.filter(id => !internalConnections.some(c => c.from === id));
+
+        console.log(`hasInputLayer: ${hasInputLayer}, hasOutputLayer: ${hasOutputLayer}`);
+        console.log(`externalIncoming: ${externalIncoming.length}, externalOutgoing: ${externalOutgoing.length}`);
+        console.log(`rootLayers: ${rootLayers}, leafLayers: ${leafLayers}`);
+
+        const inputPorts = hasInputLayer ? 0 : rootLayers.reduce((sum, id) => sum + this.getInputPortCount(this.layers.get(id).type), 0);
+        const outputPorts = hasOutputLayer ? 0 : leafLayers.reduce((sum, id) => {
+            const type = this.layers.get(id).type;
+            return sum + (type === 'output' ? 0 : 1); // Most layers have 1 output, output layer has 0
+        }, 0);
+
+        console.log(`inputPorts: ${inputPorts}, outputPorts: ${outputPorts}`);
+
+        // Create sub-layers (copy the selected layers)
+        const subLayers = {};
+        const idMapping = {};
+        let counter = 0;
+
+        for (const layerId of selectedLayerIds) {
+            const original = this.layers.get(layerId);
+            const newId = `sub_${counter++}`;
+            idMapping[layerId] = newId;
+            subLayers[newId] = {
+                id: newId,
+                type: original.type,
+                name: original.name,
+                config: { ...original.config }
+            };
+        }
+
+        // Create sub-connections
+        const subConnections = [];
+        for (const conn of internalConnections) {
+            subConnections.push({
+                from: idMapping[conn.from],
+                to: idMapping[conn.to],
+                fromPort: conn.fromPort,
+                toPort: conn.toPort
+            });
+        }
+
+        // Create the custom block
+        const customId = `layer_${++this.layerCounter}`;
+        const customName = `Custom Block ${this.layerCounter}`;
+        const customLayer = {
+            id: customId,
+            type: 'custom',
+            name: customName,
+            config: {
+                subLayers,
+                subConnections,
+                inputPorts,
+                outputPorts,
+                hasInputLayer,
+                hasOutputLayer
+            },
+            x: 100,
+            y: 100
+        };
+
+        console.log(`Created custom block with ${inputPorts} inputs, ${outputPorts} outputs`);
+
+        // Add the custom layer
+        this.layers.set(customId, customLayer);
+
+        // Create connections from external incoming to custom block
+        if (!hasInputLayer) {
+            for (let i = 0; i < externalIncoming.length; i++) {
+                const conn = externalIncoming[i];
+                this.connections.push({
+                    from: conn.from,
+                    to: customId,
+                    fromPort: conn.fromPort,
+                    toPort: `input_${i}`
+                });
+            }
+        }
+
+        // Create connections from custom block to external outgoing
+        if (!hasOutputLayer) {
+            for (let i = 0; i < externalOutgoing.length; i++) {
+                const conn = externalOutgoing[i];
+                this.connections.push({
+                    from: customId,
+                    to: conn.to,
+                    fromPort: `output_${i}`,
+                    toPort: conn.toPort
+                });
+            }
+        }
+
+        // Remove the original selected layers
+        for (const layerId of selectedLayerIds) {
+            this.layers.delete(layerId);
+            delete this.layerShapes[layerId];
+            const el = document.getElementById(layerId);
+            if (el) el.remove();
+        }
+
+        // Remove internal and external connections (the external ones we replaced)
+        this.connections = this.connections.filter(conn => {
+            const fromSelected = selectedLayerIds.has(conn.from);
+            const toSelected = selectedLayerIds.has(conn.to);
+            return !fromSelected && !toSelected;
+        });
+
+        // Clear selection and select the new custom block
+        this.selectedLayers = [customId];
+        this.renderLayer(customLayer);
+        this.renderConnections();
+        this.updateSelectionUI();
+        this.markTabModified();
+    }
+
+    expandCustomBlock(customId) {
+        const customLayer = this.layers.get(customId);
+        if (!customLayer || customLayer.type !== 'custom') return;
+
+        const config = customLayer.config;
+        const subLayers = config.subLayers;
+        const subConnections = config.subConnections;
+
+        // Create new layers from sub-layers
+        const newLayers = [];
+        const idMapping = {};
+        for (const [subId, subLayer] of Object.entries(subLayers)) {
+            const newId = `layer_${++this.layerCounter}`;
+            idMapping[subId] = newId;
+            const newLayer = {
+                id: newId,
+                type: subLayer.type,
+                name: subLayer.name,
+                config: { ...subLayer.config },
+                x: customLayer.x + Math.random() * 100 - 50,
+                y: customLayer.y + Math.random() * 100 - 50
+            };
+            newLayers.push(newLayer);
+            this.layers.set(newId, newLayer);
+        }
+
+        // Create internal connections
+        const newConnections = [];
+        for (const conn of subConnections) {
+            newConnections.push({
+                from: idMapping[conn.from],
+                to: idMapping[conn.to],
+                fromPort: conn.fromPort || 'output',
+                toPort: conn.toPort || 'input'
+            });
+        }
+
+        // Handle external connections
+        const externalIncoming = this.connections.filter(conn => conn.to === customId);
+        const externalOutgoing = this.connections.filter(conn => conn.from === customId);
+
+        if (!config.hasInputLayer) {
+            // Connect external incoming to the appropriate sub-layers
+            for (let i = 0; i < externalIncoming.length; i++) {
+                const conn = externalIncoming[i];
+                // Find sub-layer that should receive input
+                const inputSubs = Object.keys(subLayers).filter(sid => subLayers[sid].type !== 'input');
+                if (i < inputSubs.length) {
+                    newConnections.push({
+                        from: conn.from,
+                        to: idMapping[inputSubs[i]],
+                        fromPort: conn.fromPort,
+                        toPort: 'input'
+                    });
+                }
+            }
+        } else {
+            // Connect to the input sub-layer
+            const inputSub = Object.keys(subLayers).find(sid => subLayers[sid].type === 'input');
+            if (inputSub) {
+                for (const conn of externalIncoming) {
+                    newConnections.push({
+                        from: conn.from,
+                        to: idMapping[inputSub],
+                        fromPort: conn.fromPort,
+                        toPort: 'input'
+                    });
+                }
+            }
+        }
+
+        if (!config.hasOutputLayer) {
+            // Connect from appropriate sub-layers to external
+            for (let i = 0; i < externalOutgoing.length; i++) {
+                const conn = externalOutgoing[i];
+                // Find sub-layer that should provide output
+                const outputSubs = Object.keys(subLayers).filter(sid => {
+                    return !subConnections.some(c => c.from === sid); // No outgoing internal
+                });
+                if (i < outputSubs.length) {
+                    newConnections.push({
+                        from: idMapping[outputSubs[i]],
+                        to: conn.to,
+                        fromPort: 'output',
+                        toPort: conn.toPort
+                    });
+                }
+            }
+        } else {
+            // Connect from the output sub-layer
+            const outputSub = Object.keys(subLayers).find(sid => subLayers[sid].type === 'output');
+            if (outputSub) {
+                for (const conn of externalOutgoing) {
+                    newConnections.push({
+                        from: idMapping[outputSub],
+                        to: conn.to,
+                        fromPort: 'output',
+                        toPort: conn.toPort
+                    });
+                }
+            }
+        }
+
+        // Add new connections, remove old ones
+        this.connections = this.connections.filter(conn =>
+            conn.from !== customId && conn.to !== customId
+        );
+        this.connections.push(...newConnections);
+
+        // Remove custom layer
+        this.layers.delete(customId);
+        delete this.layerShapes[customId];
+        const el = document.getElementById(customId);
+        if (el) el.remove();
+
+        // Render new layers
+        for (const layer of newLayers) {
+            this.renderLayer(layer);
+        }
+
+        this.renderConnections();
+        this.markTabModified();
+    }
+
     deleteLayer(id) {
         // Remove connections
-        this.connections = this.connections.filter(conn => 
+        this.connections = this.connections.filter(conn =>
             conn.from !== id && conn.to !== id
         );
-        
+
         // Remove layer
         this.layers.delete(id);
         delete this.layerShapes[id];
-        
+
+        // Remove from selection
+        this.selectedLayers = this.selectedLayers.filter(lid => lid !== id);
+
         // Remove DOM element
         const el = document.getElementById(id);
         if (el) {
             el.remove();
         }
-        
+
         this.renderConnections();
+        this.updateSelectionUI();
         this.closeConfigPanel();
     }
     
     deleteSelectedLayer() {
-        if (this.selectedLayerId) {
-            this.deleteLayer(this.selectedLayerId);
+        if (this.selectedLayers.length > 0) {
+            this.selectedLayers.forEach(id => this.deleteLayer(id));
         }
     }
     
@@ -850,7 +1215,7 @@ class NeuralNetworkBuilder {
                     const layer = this.layers.get(layerId);
                     if (layer) {
                         this.renderLayer(layer);
-                        if (this.selectedLayerId === layerId) {
+                        if (this.selectedLayers.includes(layerId)) {
                             document.getElementById(layerId)?.classList.add('selected');
                         }
                     }
@@ -862,19 +1227,91 @@ class NeuralNetworkBuilder {
     }
     
     onMouseMove(e) {
+        if (this.isSelecting && this.selectionStart) {
+            const startX = this.selectionStart.x;
+            const startY = this.selectionStart.y;
+            const endX = e.clientX;
+            const endY = e.clientY;
+
+            const left = Math.min(startX, endX);
+            const top = Math.min(startY, endY);
+            const width = Math.abs(endX - startX);
+            const height = Math.abs(endY - startY);
+
+            this.selectionRect.style.left = `${left}px`;
+            this.selectionRect.style.top = `${top}px`;
+            this.selectionRect.style.width = `${width}px`;
+            this.selectionRect.style.height = `${height}px`;
+        }
+
         if (!this.isConnecting || !this.tempLine) return;
-        
+
         const rect = this.workspace.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        
+
         const path = this.createConnectionPath(
             this.connectStartX, this.connectStartY, x, y
         );
         this.tempLine.setAttribute('d', path);
     }
     
+    onWorkspaceMouseDown(e) {
+        // Only start selection if not clicking on a layer or port
+        if (e.target.closest('.layer-block') || e.target.closest('.port')) return;
+
+        this.isSelecting = true;
+        this.selectionStart = { x: e.clientX, y: e.clientY };
+
+        // Create selection rectangle
+        this.selectionRect = document.createElement('div');
+        this.selectionRect.className = 'selection-rect';
+        this.selectionRect.style.left = `${e.clientX}px`;
+        this.selectionRect.style.top = `${e.clientY}px`;
+        this.selectionRect.style.width = '0px';
+        this.selectionRect.style.height = '0px';
+        document.body.appendChild(this.selectionRect);
+
+        // Prevent default
+        e.preventDefault();
+    }
+
     onMouseUp(e) {
+        if (this.isSelecting) {
+            // End selection
+            const rect = this.selectionRect.getBoundingClientRect();
+            const selectedLayers = [];
+
+            // Find layers inside the rectangle
+            this.layers.forEach(layer => {
+                const layerEl = document.getElementById(layer.id);
+                if (layerEl) {
+                    const layerRect = layerEl.getBoundingClientRect();
+                    if (rect.left < layerRect.right && rect.right > layerRect.left &&
+                        rect.top < layerRect.bottom && rect.bottom > layerRect.top) {
+                        selectedLayers.push(layer.id);
+                    }
+                }
+            });
+
+            // Select the layers
+            console.log(`Selected ${selectedLayers.length} layers`);
+            if (selectedLayers.length > 0) {
+                this.selectedLayers = selectedLayers;
+                this.updateSelectionUI();
+                this.justSelected = true;
+            }
+
+            // Remove selection rect
+            if (this.selectionRect) {
+                document.body.removeChild(this.selectionRect);
+                this.selectionRect = null;
+            }
+
+            this.isSelecting = false;
+            this.selectionStart = null;
+        }
+
         if (this.isConnecting) {
             this.endConnection();
         }
@@ -1039,6 +1476,19 @@ class NeuralNetworkBuilder {
                 const actSelect = this.configContent.querySelector('#activation');
                 if (actSelect) actSelect.value = config.activation || 'relu';
                 break;
+
+            case 'custom':
+                // Update the info box
+                const infoBox = this.configContent.querySelector('.info-box');
+                if (infoBox) {
+                    const subCount = Object.keys(config.subLayers || {}).length;
+                    infoBox.innerHTML = `
+                        <strong>Custom Block</strong><br>
+                        This block contains ${subCount} layers.<br>
+                        Inputs: ${config.inputPorts}, Outputs: ${config.outputPorts}
+                    `;
+                }
+                break;
         }
     }
     
@@ -1126,6 +1576,10 @@ class NeuralNetworkBuilder {
                     const actSelect = this.configContent.querySelector('#activation');
                     if (actSelect) layer.config.activation = actSelect.value;
                     break;
+
+                case 'custom':
+                    // No config to update
+                    break;
             }
             
             this.updateLayerDisplay(layerId);
@@ -1148,7 +1602,18 @@ class NeuralNetworkBuilder {
                 });
             }
         }
-        
+
+        // Special handling for expand custom button
+        if (layer.type === 'custom') {
+            const expandBtn = this.configContent.querySelector('#expand-custom-btn');
+            if (expandBtn) {
+                expandBtn.addEventListener('click', () => {
+                    this.expandCustomBlock(layerId);
+                    this.closeConfigPanel();
+                });
+            }
+        }
+
         // Add listeners to all inputs
         this.configContent.querySelectorAll('input, select').forEach(input => {
             input.addEventListener('change', updateLayer);
@@ -1177,8 +1642,17 @@ class NeuralNetworkBuilder {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ layers, connections })
             });
-            
-            const result = await response.json();
+
+            let result;
+            try {
+                result = await response.json();
+            } catch (e) {
+                throw new Error('Invalid response format');
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${result?.message || 'Unknown error'}`);
+            }
             
             this.layerShapes = result.shapes || {};
             this.updateValidationStatus(result.valid, result.errors);

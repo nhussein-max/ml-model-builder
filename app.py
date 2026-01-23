@@ -189,9 +189,122 @@ class LayerValidator:
 
 class NetworkValidator:
     """Validates entire neural network structure."""
-    
+
+    def expand_custom_layers(self, layers: List[Dict], connections: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+        """Expand custom layers into their sub-layers and connections."""
+        expanded_layers = []
+        expanded_connections = []
+        layer_id_mapping = {}
+        global_counter = 0
+
+        for layer in layers:
+            if layer.get('type') == 'custom':
+                # Expand custom layer
+                config = layer.get('config', {})
+                sub_layers = config.get('subLayers', {})
+                sub_connections = config.get('subConnections', [])
+                custom_id = layer['id']
+
+                # Create mapping for sub-layer IDs
+                sub_mapping = {}
+                for sub_id, sub_layer in sub_layers.items():
+                    new_id = f"{custom_id}_{sub_id}_{global_counter}"
+                    global_counter += 1
+                    sub_mapping[sub_id] = new_id
+                    expanded_layer = dict(sub_layer)
+                    expanded_layer['id'] = new_id
+                    expanded_layers.append(expanded_layer)
+                    layer_id_mapping[new_id] = custom_id  # Track which custom block it came from
+
+                # Add sub-connections
+                for conn in sub_connections:
+                    expanded_connections.append({
+                        'from': sub_mapping[conn['from']],
+                        'to': sub_mapping[conn['to']],
+                        'fromPort': conn.get('fromPort', 'output'),
+                        'toPort': conn.get('toPort', 'input')
+                    })
+
+                # Connect external connections to the custom block's ports
+                input_ports = config.get('inputPorts', 0)
+                output_ports = config.get('outputPorts', 0)
+
+                # Find the input layer in sub-layers if hasInputLayer
+                if config.get('hasInputLayer'):
+                    input_layer_id = None
+                    for sub_id, sub_layer in sub_layers.items():
+                        if sub_layer['type'] == 'input':
+                            input_layer_id = sub_mapping[sub_id]
+                            break
+                    # Connect external incoming to this input layer
+                    # But since it's expanded, the connections will be handled below
+
+                # For external connections to the custom block
+                # We need to map them to the appropriate sub-layers
+                # This is tricky, but for now, assume single input/output
+
+            else:
+                expanded_layers.append(layer)
+
+        # Now handle external connections
+        for conn in connections:
+            from_layer = next((l for l in expanded_layers if l['id'] == conn['from']), None)
+            to_layer = next((l for l in expanded_layers if l['id'] == conn['to']), None)
+
+            if from_layer and to_layer:
+                # Both are regular layers
+                expanded_connections.append(conn)
+            elif to_layer and not from_layer:
+                # Connection to expanded custom block
+                # Find the custom layer it was connected to
+                custom_id = conn['to']
+                custom_layer = next((l for l in layers if l['id'] == custom_id), None)
+                if custom_layer and custom_layer.get('type') == 'custom':
+                    config = custom_layer.get('config', {})
+                    if config.get('hasInputLayer'):
+                        # Find input sub-layer
+                        for exp_layer in expanded_layers:
+                            if exp_layer['id'].startswith(f"{custom_id}_") and exp_layer['type'] == 'input':
+                                expanded_connections.append({
+                                    'from': conn['from'],
+                                    'to': exp_layer['id'],
+                                    'fromPort': conn.get('fromPort', 'output'),
+                                    'toPort': conn.get('toPort', 'input')
+                                })
+                                break
+                    else:
+                        # Map to port number
+                        port_num = int(conn.get('toPort', 'input_0').split('_')[1]) if 'input_' in conn.get('toPort', '') else 0
+                        # Find the sub-layer that should receive this input
+                        # This is simplified - assume first non-input layer or something
+                        # Actually, need better mapping
+                        pass  # TODO: implement proper port mapping
+            elif from_layer and not to_layer:
+                # Connection from expanded custom block
+                custom_id = conn['from']
+                custom_layer = next((l for l in layers if l['id'] == custom_id), None)
+                if custom_layer and custom_layer.get('type') == 'custom':
+                    config = custom_layer.get('config', {})
+                    if config.get('hasOutputLayer'):
+                        # Find output sub-layer
+                        for exp_layer in expanded_layers:
+                            if exp_layer['id'].startswith(f"{custom_id}_") and exp_layer['type'] == 'output':
+                                expanded_connections.append({
+                                    'from': exp_layer['id'],
+                                    'to': conn['to'],
+                                    'fromPort': conn.get('fromPort', 'output'),
+                                    'toPort': conn.get('toPort', 'input')
+                                })
+                                break
+                    else:
+                        # Map from port number
+                        pass  # TODO
+
+        return expanded_layers, expanded_connections
+
     def __init__(self, layers: List[Dict], connections: List[Dict]):
         self.layers = {layer['id']: layer for layer in layers}
+        self.layers_list = layers
         self.connections = connections
         self.layer_validator = LayerValidator()
         
@@ -265,162 +378,282 @@ class NetworkValidator:
         """
         errors = []
         layer_shapes = {}
-        
-        if not self.layers:
-            errors.append({'type': 'error', 'message': 'No layers in network'})
-            return False, errors, {}
-        
-        # Check for cycles and get topological order
-        is_acyclic, order, cycle_error = self.topological_sort()
-        if not is_acyclic:
-            errors.append({'type': 'error', 'message': cycle_error})
-            return False, errors, {}
-        
-        # Find input layers
-        incoming = self.get_incoming()
-        input_layers = [lid for lid, layer in self.layers.items() 
-                       if layer.get('type') == 'input']
-        
-        if not input_layers:
-            # Check for layers with no incoming connections
-            root_layers = [lid for lid, inc in incoming.items() if len(inc) == 0]
-            if not root_layers:
-                errors.append({'type': 'error', 'message': 'No input layer found'})
+
+        # Check if there are custom layers
+        has_custom = any(layer.get('type') == 'custom' for layer in self.layers_list)
+
+        if has_custom:
+            # Expand custom layers
+            expanded_layers, expanded_connections = self.expand_custom_layers(self.layers_list, self.connections)
+            # Create a temporary validator for expanded network
+            temp_validator = NetworkValidator(expanded_layers, expanded_connections)
+            return temp_validator.validate()
+        else:
+            # Normal validation without expansion
+            if not self.layers:
+                errors.append({'type': 'error', 'message': 'No layers in network'})
                 return False, errors, {}
-        
-        # Validate each layer in topological order
-        for layer_id in order:
-            layer = self.layers[layer_id]
-            inc = incoming.get(layer_id, [])
-            
-            if layer.get('type') == 'input':
-                shape = self.layer_validator.get_output_shape(layer, None)
-                if shape is None:
-                    errors.append({
-                        'type': 'error',
-                        'message': f"Invalid input shape for layer {layer.get('name', layer_id)}",
-                        'layer_id': layer_id
-                    })
-                else:
-                    layer_shapes[layer_id] = shape
-            elif len(inc) == 0:
-                errors.append({
-                    'type': 'warning',
-                    'message': f"Layer {layer.get('name', layer_id)} has no input connection",
-                    'layer_id': layer_id
-                })
-            elif layer.get('type') == 'concatenate':
-                # Handle concatenate layer with multiple inputs
-                config = layer.get('config', {})
-                axis = config.get('axis', -1)
-                
-                # Get shapes from all input connections
-                input_shapes = []
-                for conn_info in inc:
-                    input_layer_id = conn_info['from']
-                    if input_layer_id in layer_shapes:
-                        input_shapes.append(layer_shapes[input_layer_id])
-                
-                if len(input_shapes) < 2:
+
+            # Check for cycles and get topological order
+            is_acyclic, order, cycle_error = self.topological_sort()
+            if not is_acyclic:
+                errors.append({'type': 'error', 'message': cycle_error})
+                return False, errors, {}
+
+            # Find input layers
+            incoming = self.get_incoming()
+            input_layers = [lid for lid, layer in self.layers.items()
+                           if layer.get('type') == 'input']
+
+            if not input_layers:
+                # Check for layers with no incoming connections
+                root_layers = [lid for lid, inc in incoming.items() if len(inc) == 0]
+                if not root_layers:
+                    errors.append({'type': 'error', 'message': 'No input layer found'})
+                    return False, errors, {}
+
+            # Validate each layer in topological order
+            for layer_id in order:
+                layer = self.layers[layer_id]
+                inc = incoming.get(layer_id, [])
+
+                if layer.get('type') == 'input':
+                    shape = self.layer_validator.get_output_shape(layer, None)
+                    if shape is None:
+                        errors.append({
+                            'type': 'error',
+                            'message': f"Invalid input shape for layer {layer.get('name', layer_id)}",
+                            'layer_id': layer_id
+                        })
+                    else:
+                        layer_shapes[layer_id] = shape
+                elif len(inc) == 0:
                     errors.append({
                         'type': 'warning',
-                        'message': f"Concatenate layer {layer.get('name', layer_id)} needs 2 inputs, has {len(input_shapes)}",
+                        'message': f"Layer {layer.get('name', layer_id)} has no input connection",
                         'layer_id': layer_id
                     })
-                    if len(input_shapes) == 1:
-                        layer_shapes[layer_id] = input_shapes[0]
-                else:
-                    # Validate shapes are compatible for concatenation
-                    shape1 = list(input_shapes[0])
-                    shape2 = list(input_shapes[1])
-                    
-                    # Normalize axis
-                    concat_axis = axis if axis >= 0 else len(shape1) + axis
-                    
-                    if len(shape1) != len(shape2):
-                        errors.append({
-                            'type': 'error',
-                            'message': f"Concatenate inputs must have same number of dimensions",
-                            'layer_id': layer_id
-                        })
-                    elif concat_axis < 0 or concat_axis >= len(shape1):
-                        errors.append({
-                            'type': 'error',
-                            'message': f"Invalid concatenation axis {axis}",
-                            'layer_id': layer_id
-                        })
-                    else:
-                        # Check all dims except concat axis match
-                        valid = True
-                        for i in range(len(shape1)):
-                            if i != concat_axis and shape1[i] != shape2[i]:
-                                errors.append({
-                                    'type': 'error',
-                                    'message': f"Shapes {tuple(shape1)} and {tuple(shape2)} not compatible for concat on axis {axis}",
-                                    'layer_id': layer_id
-                                })
-                                valid = False
-                                break
-                        
-                        if valid:
-                            # Calculate output shape
-                            output_shape = list(shape1)
-                            output_shape[concat_axis] = shape1[concat_axis] + shape2[concat_axis]
-                            layer_shapes[layer_id] = tuple(output_shape)
-            else:
-                # Get input shape from connected layer
-                input_layer_id = inc[0]['from']  # Take first connection
-                if input_layer_id in layer_shapes:
-                    input_shape = layer_shapes[input_layer_id]
-                    
-                    # Validate connection
-                    is_valid, error = self.layer_validator.validate_connection(
-                        self.layers[input_layer_id], layer, input_shape
-                    )
-                    if not is_valid:
-                        errors.append({
-                            'type': 'error',
-                            'message': error,
-                            'layer_id': layer_id
-                        })
-                        continue
-                    
-                    # Calculate output shape
-                    output_shape = self.layer_validator.get_output_shape(layer, input_shape)
-                    if output_shape is None:
-                        errors.append({
-                            'type': 'error',
-                            'message': f"Invalid configuration for layer {layer.get('name', layer_id)}",
-                            'layer_id': layer_id
-                        })
-                    else:
-                        layer_shapes[layer_id] = output_shape
-        
-        # Check for disconnected layers
-        graph = self.build_graph()
-        incoming_simple = self.get_incoming_simple()
-        for layer_id, layer in self.layers.items():
-            if layer.get('type') != 'input':
-                if len(incoming_simple.get(layer_id, [])) == 0:
-                    if layer_id not in [e.get('layer_id') for e in errors]:
+                elif layer.get('type') == 'concatenate':
+                    # Handle concatenate layer with multiple inputs
+                    config = layer.get('config', {})
+                    axis = config.get('axis', -1)
+
+                    # Get shapes from all input connections
+                    input_shapes = []
+                    for conn_info in inc:
+                        input_layer_id = conn_info['from']
+                        if input_layer_id in layer_shapes:
+                            input_shapes.append(layer_shapes[input_layer_id])
+
+                    if len(input_shapes) < 2:
                         errors.append({
                             'type': 'warning',
-                            'message': f"Layer {layer.get('name', layer_id)} is disconnected",
+                            'message': f"Concatenate layer {layer.get('name', layer_id)} needs 2 inputs, has {len(input_shapes)}",
                             'layer_id': layer_id
                         })
-        
-        has_errors = any(e['type'] == 'error' for e in errors)
-        return not has_errors, errors, layer_shapes
+                        if len(input_shapes) == 1:
+                            layer_shapes[layer_id] = input_shapes[0]
+                    else:
+                        # Validate shapes are compatible for concatenation
+                        shape1 = list(input_shapes[0])
+                        shape2 = list(input_shapes[1])
+
+                        # Normalize axis
+                        concat_axis = axis if axis >= 0 else len(shape1) + axis
+
+                        if len(shape1) != len(shape2):
+                            errors.append({
+                                'type': 'error',
+                                'message': f"Concatenate inputs must have same number of dimensions",
+                                'layer_id': layer_id
+                            })
+                        elif concat_axis < 0 or concat_axis >= len(shape1):
+                            errors.append({
+                                'type': 'error',
+                                'message': f"Invalid concatenation axis {axis}",
+                                'layer_id': layer_id
+                            })
+                        else:
+                            # Check all dims except concat axis match
+                            valid = True
+                            for i in range(len(shape1)):
+                                if i != concat_axis and shape1[i] != shape2[i]:
+                                    errors.append({
+                                        'type': 'error',
+                                        'message': f"Shapes {tuple(shape1)} and {tuple(shape2)} not compatible for concat on axis {axis}",
+                                        'layer_id': layer_id
+                                    })
+                                    valid = False
+                                    break
+
+                            if valid:
+                                # Calculate output shape
+                                output_shape = list(shape1)
+                                output_shape[concat_axis] = shape1[concat_axis] + shape2[concat_axis]
+                                layer_shapes[layer_id] = tuple(output_shape)
+                else:
+                    # Get input shape from connected layer
+                    input_layer_id = inc[0]['from']  # Take first connection
+                    if input_layer_id in layer_shapes:
+                        input_shape = layer_shapes[input_layer_id]
+
+                        # Validate connection
+                        is_valid, error = self.layer_validator.validate_connection(
+                            self.layers[input_layer_id], layer, input_shape
+                        )
+                        if not is_valid:
+                            errors.append({
+                                'type': 'error',
+                                'message': error,
+                                'layer_id': layer_id
+                            })
+                            continue
+
+                        # Calculate output shape
+                        output_shape = self.layer_validator.get_output_shape(layer, input_shape)
+                        if output_shape is None:
+                            errors.append({
+                                'type': 'error',
+                                'message': f"Invalid configuration for layer {layer.get('name', layer_id)}",
+                                'layer_id': layer_id
+                            })
+                        else:
+                            layer_shapes[layer_id] = output_shape
+
+            # Check for disconnected layers
+            graph = self.build_graph()
+            incoming_simple = self.get_incoming_simple()
+            for layer_id, layer in self.layers.items():
+                if layer.get('type') != 'input':
+                    if len(incoming_simple.get(layer_id, [])) == 0:
+                        if layer_id not in [e.get('layer_id') for e in errors]:
+                            errors.append({
+                                'type': 'warning',
+                                'message': f"Layer {layer.get('name', layer_id)} is disconnected",
+                                'layer_id': layer_id
+                            })
+
+            has_errors = any(e['type'] == 'error' for e in errors)
+            return not has_errors, errors, layer_shapes
 
 
 class PyTorchCodeGenerator:
     """Generates PyTorch code from network definition."""
-    
+
+    def expand_custom_layers(self, layers: List[Dict], connections: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+        """Expand custom layers into their sub-layers and connections."""
+        expanded_layers = []
+        expanded_connections = []
+        global_counter = 0
+
+        for layer in layers:
+            if layer.get('type') == 'custom':
+                config = layer.get('config', {})
+                sub_layers = config.get('subLayers', {})
+                sub_connections = config.get('subConnections', [])
+                custom_id = layer['id']
+
+                sub_mapping = {}
+                for sub_id, sub_layer in sub_layers.items():
+                    new_id = f"{custom_id}_{sub_id}_{global_counter}"
+                    global_counter += 1
+                    sub_mapping[sub_id] = new_id
+                    expanded_layer = dict(sub_layer)
+                    expanded_layer['id'] = new_id
+                    expanded_layers.append(expanded_layer)
+
+                for conn in sub_connections:
+                    expanded_connections.append({
+                        'from': sub_mapping[conn['from']],
+                        'to': sub_mapping[conn['to']],
+                        'fromPort': conn.get('fromPort', 'output'),
+                        'toPort': conn.get('toPort', 'input')
+                    })
+
+                # Handle external connections
+                input_ports = config.get('inputPorts', 0)
+                output_ports = config.get('outputPorts', 0)
+
+                # Find external connections to/from this custom block
+                for conn in connections:
+                    if conn['to'] == custom_id:
+                        if config.get('hasInputLayer'):
+                            # Connect to input sub-layer
+                            input_sub_id = next((sid for sid, sl in sub_layers.items() if sl['type'] == 'input'), None)
+                            if input_sub_id:
+                                expanded_connections.append({
+                                    'from': conn['from'],
+                                    'to': sub_mapping[input_sub_id],
+                                    'fromPort': conn.get('fromPort', 'output'),
+                                    'toPort': conn.get('toPort', 'input')
+                                })
+                        else:
+                            # Map port number to first layer that needs input
+                            port_num = 0
+                            if 'input_' in str(conn.get('toPort', '')):
+                                port_num = int(conn['toPort'].split('_')[1])
+                            # Assume the first non-input layer
+                            non_input_subs = [sid for sid, sl in sub_layers.items() if sl['type'] != 'input']
+                            if port_num < len(non_input_subs):
+                                target_sub = non_input_subs[port_num]
+                                expanded_connections.append({
+                                    'from': conn['from'],
+                                    'to': sub_mapping[target_sub],
+                                    'fromPort': conn.get('fromPort', 'output'),
+                                    'toPort': 'input'
+                                })
+
+                    elif conn['from'] == custom_id:
+                        if config.get('hasOutputLayer'):
+                            # Connect from output sub-layer
+                            output_sub_id = next((sid for sid, sl in sub_layers.items() if sl['type'] == 'output'), None)
+                            if output_sub_id:
+                                expanded_connections.append({
+                                    'from': sub_mapping[output_sub_id],
+                                    'to': conn['to'],
+                                    'fromPort': 'output',
+                                    'toPort': conn.get('toPort', 'input')
+                                })
+                        else:
+                            # Map from port number
+                            port_num = 0
+                            if 'output_' in str(conn.get('fromPort', '')):
+                                port_num = int(conn['fromPort'].split('_')[1])
+                            # Assume from the last layer or something
+                            # Simplified: from the layer that has no outgoing internal connections
+                            candidates = []
+                            for sid in sub_layers:
+                                has_outgoing = any(c['from'] == sid for c in sub_connections)
+                                if not has_outgoing:
+                                    candidates.append(sid)
+                            if port_num < len(candidates):
+                                source_sub = candidates[port_num]
+                                expanded_connections.append({
+                                    'from': sub_mapping[source_sub],
+                                    'to': conn['to'],
+                                    'fromPort': 'output',
+                                    'toPort': conn.get('toPort', 'input')
+                                })
+            else:
+                expanded_layers.append(layer)
+
+        # Add non-custom connections
+        for conn in connections:
+            from_custom = any(l['id'] == conn['from'] and l.get('type') == 'custom' for l in layers)
+            to_custom = any(l['id'] == conn['to'] and l.get('type') == 'custom' for l in layers)
+            if not from_custom and not to_custom:
+                expanded_connections.append(conn)
+
+        return expanded_layers, expanded_connections
+
     def __init__(self, layers: List[Dict], connections: List[Dict], layer_shapes: Dict[str, Tuple]):
-        self.layers = {layer['id']: layer for layer in layers}
-        self.layers_list = layers
-        self.connections = connections
-        self.layer_shapes = layer_shapes
+        # Expand custom layers
+        expanded_layers, expanded_connections = self.expand_custom_layers(layers, connections)
+
+        self.layers = {layer['id']: layer for layer in expanded_layers}
+        self.layers_list = expanded_layers
+        self.connections = expanded_connections
+        self.layer_shapes = layer_shapes  # Note: shapes may need updating for expanded layers
         
     def generate(self) -> str:
         """Generate PyTorch model code."""
@@ -768,17 +1001,34 @@ def validate_network():
     data = request.get_json()
     layers = data.get('layers', [])
     connections = data.get('connections', [])
-    
+
     validator = NetworkValidator(layers, connections)
     is_valid, errors, layer_shapes = validator.validate()
-    
-    # Convert tuples to lists for JSON serialization
-    shapes_json = {k: list(v) for k, v in layer_shapes.items()}
-    
+
+    # Map errors and shapes back to original layer ids for custom blocks
+    for error in errors:
+        if 'layer_id' in error:
+            lid = error['layer_id']
+            if '_sub_' in lid:
+                custom_id = lid.split('_sub_')[0]
+                error['layer_id'] = custom_id
+                # Update message to indicate it's from a custom block
+                if 'has no input connection' in error['message']:
+                    error['message'] = f"Custom block '{layers_dict.get(custom_id, {}).get('name', custom_id)}' contains unconnected layers"
+
+    # Map shapes back to custom block ids
+    mapped_shapes = {}
+    for lid, shape in layer_shapes.items():
+        if '_sub_' in lid:
+            custom_id = lid.split('_sub_')[0]
+            mapped_shapes[custom_id] = list(shape)
+        else:
+            mapped_shapes[lid] = list(shape)
+
     return jsonify({
         'valid': is_valid,
         'errors': errors,
-        'shapes': shapes_json
+        'shapes': mapped_shapes
     })
 
 

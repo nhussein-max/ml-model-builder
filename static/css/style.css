@@ -670,6 +670,71 @@ body {
     opacity: 1;
 }
 
+/* Multi-output ports container */
+.multi-output-ports {
+    position: absolute;
+    right: -7px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.multi-output-ports .output-port-wrapper {
+    position: relative;
+    top: auto;
+    right: auto;
+    transform: none;
+}
+
+.output-port-label {
+    position: absolute;
+    right: 22px;
+    font-size: 9px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.output-port-wrapper:hover .output-port-label {
+    opacity: 1;
+}
+
+/* Single output port */
+.output-port {
+    position: absolute;
+    right: -7px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 14px;
+    height: 14px;
+    background-color: var(--layer-output);
+    border: 2px solid var(--card-bg);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.output-port:hover {
+    transform: translateY(-50%) scale(1.2);
+    box-shadow: 0 0 8px var(--layer-output);
+}
+
+/* Selection rectangle */
+.selection-rect {
+    position: absolute;
+    border: 2px dashed var(--primary-color);
+    background-color: rgba(74, 144, 217, 0.1);
+    pointer-events: none;
+    z-index: 1000;
+}
+
+.input-port-wrapper:hover .input-port-label {
+    opacity: 1;
+}
+
 .port.output-port {
     top: 50%;
     right: -7px;

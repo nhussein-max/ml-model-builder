@@ -83,7 +83,14 @@
                     </div>
                 </div>
             </div>
-            
+
+            <div class="sidebar-section">
+                <h3>Custom Blocks</h3>
+                <button id="create-custom-btn" class="action-btn" disabled>
+                    🧱 Create Custom Block
+                </button>
+            </div>
+
             <div class="sidebar-section">
                 <h3>Actions</h3>
                 <button id="validate-btn" class="action-btn">
@@ -371,6 +378,22 @@
                 <option value="softmax">Softmax</option>
                 <option value="leaky_relu">Leaky ReLU</option>
             </select>
+        </div>
+    </template>
+
+    <template id="custom-config-template">
+        <div class="config-group">
+            <label for="layer-name">Block Name</label>
+            <input type="text" id="layer-name" class="config-input" placeholder="Custom Block">
+        </div>
+        <div class="config-group info-box">
+            <strong>Custom Block</strong><br>
+            This block contains multiple layers.<br>
+            Inputs: 0, Outputs: 0
+        </div>
+        <div class="config-group">
+            <button id="expand-custom-btn" class="action-btn">Expand Block</button>
+            <small>Expand to edit individual layers</small>
         </div>
     </template>
     
